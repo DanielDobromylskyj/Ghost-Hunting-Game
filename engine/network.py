@@ -44,12 +44,13 @@ class Player:
 
     def get_info(self):
         return {"username": self.username, "position": self.position, "is_ghost": self.is_ghost,
-                "is_client": self.is_client}
+                "is_client": self.is_client, "ready": self.ready}
 
     def recv_info(self, info):
         self.username = info["username"]
         self.position = info["position"]
         self.is_ghost = info["is_ghost"]
+        self.ready = info["ready"]
         self.last_update = time.time()
 
 
@@ -154,8 +155,8 @@ class Client:
 
         self.engine = render_engine
         self.player = player
-        self.players = []
-        self.ping = 0
+        self.players = {}
+        self.current_ping = 0
 
     def connect(self) -> str | bool:
         """ Attempts to connect to the server, returns true / error message, if successful / failed"""
@@ -191,17 +192,30 @@ class Client:
         return recv_value(self.sock, compressed=True)
 
     def get_server_tps(self):
+        """ Gets the servers desired TPS"""
         send_value(self.sock, "tps")
         return recv_value(self.sock)
 
     def send_player_info(self):
+        """ Update the servers version of out data"""
         send_value(self.sock, "player_info")
         if recv_value(self.sock) != "ready": return
         send_value(self.sock, self.player.get_info())
 
     def get_other_players_info(self):
+        """ Retrieves and updates all player data (including our own)"""
         send_value(self.sock, "other_players_info")
-        return recv_value(self.sock)
+        data = recv_value(self.sock)
+
+        for player_info in data:
+            if player_info["username"] not in self.players:
+                self.players[player_info["username"]] = Player()
+
+            self.players[player_info["username"]].recv_info(player_info)
+
+    def get_ping(self):
+        """ Sets the current ping"""
+        self.current_ping = self.ping()
 
     def load_map(self):
         """ Loads the map data from the servers loaded map and loads it into render engine """
@@ -219,6 +233,11 @@ class Client:
 
         os.remove(path)
 
+    def set_ready(self, ready_status: bool = True) -> None:
+        """ Sets player status to "ready" allowing server to start playing """
+        self.player.ready = ready_status
+
+
     def __start(self) -> None:
         result = self.connect()
 
@@ -226,7 +245,8 @@ class Client:
             raise ConnectionRefusedError(result)
 
         self.load_map()
-        target_time = 1 / self.get_server_tps()
+        target_tps = self.get_server_tps()
+        target_time = 1 / target_tps
         tick_counter = 0
 
         while True:
@@ -236,6 +256,9 @@ class Client:
 
             self.send_player_info()
             self.get_other_players_info()
+
+            if tick_counter % target_tps:
+                self.get_ping()
 
 
             # End Of Networking Loop
