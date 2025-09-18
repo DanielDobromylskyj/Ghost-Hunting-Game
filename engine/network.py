@@ -55,7 +55,7 @@ class Player:
 
 class Server:
     MAX_PLAYERS = 5
-    SERVER_FPS = 60
+    SERVER_FPS = 30
 
     def __init__(self, map_path, port=5678):
         local_ip = socket.gethostbyname(socket.gethostname())
@@ -64,8 +64,6 @@ class Server:
         self.sock.bind((local_ip, port))
 
         self.map_path = map_path
-        self.engine = None
-        self.map = None
         self.map_data = b""
 
         self.players = []
@@ -77,6 +75,14 @@ class Server:
             self.map_data = f.read()
 
         self.mode = "lobby"
+
+    def __get_players_information(self):
+        return [
+            player.get_info()
+            for player in self.players
+        ]
+
+
 
     def __handle_client(self, conn: socket.socket):
         """ Handles client connections """
@@ -95,6 +101,7 @@ class Server:
         player.recv_info(player_info)
 
         self.players.append(player)
+        player_index = len(self.players) - 1
 
         while conn:
             request = recv_value(conn)
@@ -105,13 +112,21 @@ class Server:
                 break
 
             elif request == "ping":
-                send_value(self.sock, "pong")
+                send_value(conn, "pong")
 
             elif request == "map_data":
-                send_value(self.sock, self.map_data, compressed=True)
+                send_value(conn, self.map_data, compressed=True)
 
             elif request == "tps":
-                send_value(self.sock, self.SERVER_FPS)
+                send_value(conn, self.SERVER_FPS)
+
+            elif request == "player_info":
+                send_value(conn, "ready")
+                player_info = recv_value(conn)
+                self.players[player_index].recv_info(player_info)
+
+            elif request == "other_players_info":
+               send_value(conn, self.__get_players_information())
 
         return None
 
@@ -181,6 +196,12 @@ class Client:
 
     def send_player_info(self):
         send_value(self.sock, "player_info")
+        if recv_value(self.sock) != "ready": return
+        send_value(self.sock, self.player.get_info())
+
+    def get_other_players_info(self):
+        send_value(self.sock, "other_players_info")
+        return recv_value(self.sock)
 
     def load_map(self):
         """ Loads the map data from the servers loaded map and loads it into render engine """
@@ -212,6 +233,9 @@ class Client:
             start = time.time()
 
             # Networking Update Loop
+
+            self.send_player_info()
+            self.get_other_players_info()
 
 
             # End Of Networking Loop
