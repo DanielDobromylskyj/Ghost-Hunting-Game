@@ -5,7 +5,7 @@ from .render import Render as RenderEngine
 class Game:
     def __init__(self):
         self.render = RenderEngine()
-        self.render.load_map()
+        self.render.load_map("data/demo_map.bin")
 
         self.clock = pygame.time.Clock()
 

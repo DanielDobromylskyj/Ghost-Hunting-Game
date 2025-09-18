@@ -4,7 +4,7 @@ import pyopencl as pycl
 import pygame
 
 from .assets import Texture2D
-from .map import DemoMap
+from .map import LoadedMap
 
 
 mf = pycl.mem_flags
@@ -34,11 +34,13 @@ class Render:
         self.__program = None
         self.__height_map_shape = None
         self.__height_map = None
+        self.__light_map_shape = None
+        self.__light_map = None
         self.__player_texture_id = None
         self.__map = None
         self.__deltas = None
         self.position = [0, 0]
-        self.view_height = 0.5
+        self.view_height = 0.75
 
         self.__load_kernels()
         self.__create_kernel_deltas()
@@ -66,10 +68,10 @@ class Render:
         )
         return len(self.__assets) - 1
 
-    def load_map(self): # todo - make this load from a file
+    def load_map(self, path):
         self.__assets = [] # I think I need to clear more than just assets
-        self.__map = DemoMap(self)
-        self.pre_compute_height_map()
+        self.__map = LoadedMap(self, path)
+        self.pre_compute_maps()
 
         self.__player_texture_id = self.load_texture("data/textures/player_place_holder.png", mode="RGBA")
 
@@ -88,10 +90,16 @@ class Render:
 
         self.__deltas = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=deltas)
 
-    def pre_compute_height_map(self):
+    def pre_compute_maps(self):
         height_map = self.__map.compute_height_map()
         self.__height_map = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=height_map.data)
         self.__height_map_shape = height_map.shape
+
+        light_map = self.__map.compute_light_map()
+        self.__light_map = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=light_map.data)
+        self.__light_map_shape = light_map.shape
+
+
 
     def compute_shadow_mask(self):
         pycl.enqueue_fill_buffer(self.cl.queue, self.shadow_mask_buffer, np.uint8(255), 0, self.shadow_mask.nbytes)
@@ -101,6 +109,7 @@ class Render:
             self.cl.queue, (self.RAY_COUNT,), None,
             self.shadow_mask_buffer,
             self.__height_map,
+            self.__light_map,
             self.__deltas,
 
             np.int32(self.display_size[1]),
@@ -125,9 +134,12 @@ class Render:
     def render_scene(self):
         self.compute_shadow_mask()
 
-        self.display.blit(self.__map.background_img, (0, 0))
+        self.display.blit(self.__map.background_img, (-self.position[1], -self.position[0]))
 
         for world_object in self.__map.scene.values():
+            if "NORENDER" in world_object["path"]:
+                continue
+
             texture = self.get_asset(world_object["texture_id"])
             x, y = world_object["position"]
             self.display.blit(texture.pygame_surface, (x - self.position[1], y - self.position[0]))

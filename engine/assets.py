@@ -50,21 +50,17 @@ class Texture2D(DefaultAsset):
 
 
     def load_raw(self, path):
-        img = Image.open(path).convert(self.image_mode)
-        new_size = (int(img.width * self.quality), int(img.height * self.quality))
-        scaled = img.resize(new_size, Image.BILINEAR)
-
-        self.image_width = img.width
-        self.image_height = img.height
+        texture = pygame.image.load(path).convert_alpha()
+        self.image_width = texture.get_width()
+        self.image_height = texture.get_height()
         self.channels = len(self.image_mode)
 
-        self.texture_width = new_size[0]
-        self.texture_height = new_size[1]
 
         if self.use_pygame:
             if not pygame.get_init():
                 pygame.init()
 
-            self.pygame_surface = pygame.image.load(path).convert_alpha()
+            self.pygame_surface = texture
 
-        return np.array(scaled).astype(np.uint8)
+        # get raw data
+        return texture.get_buffer().raw

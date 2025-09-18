@@ -1,5 +1,8 @@
+import math
+
 import numpy as np
 import pygame
+from matplotlib import pyplot as plt
 
 
 class MapLoadingException(Exception):
@@ -11,6 +14,7 @@ class Map:
 
     background_img = None
     scene = {}
+    __maps = {}
 
     def __init__(self, render_engine):
         self.render_engine = render_engine
@@ -34,6 +38,9 @@ class Map:
             self.__to_path(layout["background"])
         )
 
+        self.__maps["height"] = layout["map"]["height"]
+        self.__maps["light"] = layout["map"]["light"]
+
         self.background_img = self.render_engine.get_asset(texture_index).pygame_surface
 
         self.scene = {}
@@ -41,12 +48,14 @@ class Map:
             if world_object["name"] in self.scene:
                 raise MapLoadingException("Found two objects with the same name!")
 
+
             self.scene[world_object["name"]] = {
                 "position": world_object["position"],
                 "height": world_object["height"],
                 "texture_id": self.render_engine.load_texture(
                     self.__to_path(world_object["path"])
-                )
+                ),
+                "path": self.__to_path(world_object["path"]),
             }
 
     def get_pygame_texture(self, world_object):
@@ -71,26 +80,69 @@ class Map:
             if max_y < h + pos[1]:
                 max_y = h + pos[1]
 
-        return max_x, max_y
+        return max_y, max_x
+
+
+    def compute_light_map(self):
+        return self.__maps["light"]  # Computed and stored in the save file now
 
     def compute_height_map(self):
-        height_map = np.zeros(self.get_size(), dtype=np.float32)
+        return self.__maps["height"]  # Computed and stored in the save file now
 
-        for world_object in self.scene.values():
-            position = world_object["position"]
-            texture = self.get_pygame_texture(world_object)  # RGBA
-            width, height = self.get_object_shape(world_object)
-            height_value = world_object["height"]
 
-            tex_array = pygame.surfarray.array_alpha(texture)
-            mask = tex_array > 0
+class LoadedMap(Map):
+    MAP_VERSION = 1
 
-            submap = height_map[position[1]:(position[1] + height),
-            position[0]:(position[0] + width)]
+    def __init__(self, render_engine, path):
+        super().__init__(render_engine)
+        self.load(path)
 
-            submap[mask] = height_value
+    def load(self, path):
+        def read_string(file, length=2):
+            length = int.from_bytes(file.read(length))
 
-        return height_map
+            if length == 0:
+                return None
+
+            content = file.read(length)
+            return content.decode()
+
+        def load_map(file):
+            width, height = int.from_bytes(file.read(2)), int.from_bytes(file.read(2))
+            data_length = int.from_bytes(file.read(4))
+            data = file.read(data_length)
+
+            return np.frombuffer(data, dtype=np.float32).reshape(width, height)
+
+        layout = {}
+        with open(path, "rb") as f:
+            layout["version"] = int.from_bytes(f.read(1))
+
+            if layout["version"] != self.MAP_VERSION:
+                raise MapLoadingException("Invalid map version!")
+
+            layout["background"] = read_string(f)
+            object_count = int.from_bytes(f.read(4))
+
+            layout["objects"] = [
+                {
+                    "name": read_string(f),
+                    "position": (int.from_bytes(f.read(2)), int.from_bytes(f.read(2))),
+                    "height": int.from_bytes(f.read(2)) / 1000,
+                    "path": read_string(f),
+                } for _ in range(object_count)
+            ]
+
+            layout["map"] = {
+                "height": load_map(f),
+                "light": load_map(f)
+            }
+
+        self.load_layout(layout)
+
+
+
+
 
 
 

@@ -1,5 +1,5 @@
 
-__kernel void mask(__global uchar* pixels, __global float* height_map, __global float* deltas, int screen_width, int screen_height, int map_width, int map_height, int max_step_count, int x_offset, int y_offset, float view_height) {
+__kernel void mask(__global uchar* pixels, __global float* height_map, __global float* light_map, __global float* deltas, int screen_width, int screen_height, int map_width, int map_height, int max_step_count, int x_offset, int y_offset, float view_height) {
     int delta_index = get_global_id(0);
 
     float delta_x = deltas[delta_index * 2];
@@ -34,6 +34,7 @@ __kernel void mask(__global uchar* pixels, __global float* height_map, __global 
         int map_index = map_x * map_height + map_y;
 
         float map_height = height_map[map_index];
+        float light_intensity = light_map[map_index];
 
         if (map_height >= view_height) { wall_hit = 1; }
 
@@ -57,7 +58,12 @@ __kernel void mask(__global uchar* pixels, __global float* height_map, __global 
         int pixel_y = (int)(ray_y);
 
         int pixel_index = pixel_y * screen_width + pixel_x;
-        pixels[pixel_index] = (uchar)((1 - ray_brightness) * 255);
+
+        float pixel_brightness = ray_brightness * 0.1;
+
+        if (light_intensity > pixel_brightness) { pixel_brightness = light_intensity; }
+
+        pixels[pixel_index] = (uchar)((1 - pixel_brightness) * 255);
 
     }
 
