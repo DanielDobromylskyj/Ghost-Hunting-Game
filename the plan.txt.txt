@@ -1,0 +1,37 @@
+Ghost Behaviours and Evidence
+
+* Some ghosts can only be deciphered based of ghost behaviours and evidence combined, This forces players to be hunted / spend more time with the ghost
+* The player will have a guide to help rule out possible ghosts given what they have collected.
+
+Behaviours:
+>> During Hunts/Attacks
+   > Line Of Site Speed Increase
+   > Dash ability - Ghost speeds up to ~200% speed for a second or two.
+   > Player Slow - Slows down a player in LOS to 75% speed for a second
+   > Lights out - Can turn off all lights for 3 seconds
+
+
+>> Passive
+   > Door slam
+   > Light flicker
+   > Can turn off electronics / devices
+
+
+
+Evidence:
+>> Pressure - A ghost may fluctuate the rooms pressure 
+   > High Pressure
+   > Low Pressure
+
+>> Temperature - A ghost will tend towards making a room a desired temperature
+   > High Temp (30+)
+   > Freezing (Sub 0)
+
+> Smoke machine - Some ghosts may show up on it, others may not
+> Footsteps / running - Randomly heard in an adjacent room  ?
+
+
+Ghosts:
+
+
+
