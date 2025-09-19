@@ -1,0 +1,5 @@
+pygame
+pyopencl
+numpy
+matplotlib
+lz4
