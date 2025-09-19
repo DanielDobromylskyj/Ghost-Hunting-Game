@@ -3,6 +3,7 @@ import math
 import pyopencl as pycl
 import pygame
 
+from .network import Client
 from .assets import Texture2D
 from .map import LoadedMap
 
@@ -22,6 +23,7 @@ class Render:
         if not pygame.get_init():
             pygame.init()
 
+        self.client: Client | None = None
         self.display_size = pygame.display.get_desktop_sizes()[0]
         self.display = pygame.display.set_mode(self.display_size, pygame.SRCALPHA)
 
@@ -131,7 +133,44 @@ class Render:
         alpha_view = pygame.surfarray.pixels_alpha(self.shadow_mask_surface)
         alpha_view[:, :] = self.shadow_mask  # shapes (h, w) match
 
+    def render_lobby(self):
+        self.display.fill((0, 0, 0))
+
+        if self.client.error:
+            self.display.blit(
+                self.font.render(f"Problem: {self.client.error}", True, (255, 255, 255)),
+                (50, 50)
+            )
+        else:
+            if not self.client.player.ready:
+                self.display.blit(
+                    self.font.render(f"Press the 'g' button to ready", True, (255, 255, 255)),
+                    (50, 50)
+                )
+
+            else:
+                self.display.blit(
+                    self.font.render(f"Awaiting other players to ready (Ping: {self.client.current_ping}ms)", True, (255, 255, 255)),
+                    (50, 50)
+                )
+
+    def server_ready(self):
+        if not self.__height_map:
+            return False
+
+        for player in self.client.players.values():
+            if not player.ready:
+                return False
+
+        if not self.client.player.ready:
+            return False
+
+        return True
+
     def render_scene(self):
+        if not self.server_ready():
+            return self.render_lobby()
+
         self.compute_shadow_mask()
 
         self.display.blit(self.__map.background_img, (-self.position[1], -self.position[0]))
@@ -146,14 +185,22 @@ class Render:
 
         self.render_self()
 
+        for name, player in self.client.players.items():
+            if name != self.client.player.username:
+                self.render_player(*player.position)
+
         self.display.blit(self.shadow_mask_surface, (0, 0))
+        return None
 
     def render_self(self):
-        self.render_player(self.display_size[0] // 2, self.display_size[1] // 2)
+        texture = self.get_asset(self.__player_texture_id)
+        self.display.blit(texture.pygame_surface, (self.display_size[0] // 2, self.display_size[1] // 2))
 
     def render_player(self, cx, cy):
         texture = self.get_asset(self.__player_texture_id)
-        self.display.blit(texture.pygame_surface, (cx - (texture.image_width // 2), cy - (texture.image_height // 2)))
+
+        self.display.blit(texture.pygame_surface, (cx + (self.display_size[0] // 2) - self.position[1],
+                                                   cy + (self.display_size[1] // 2) - self.position[0]))
 
     def display_fps(self, fps):
         rect = self.font.render(f"FPS: {round(fps)}", True, (255, 0, 0))

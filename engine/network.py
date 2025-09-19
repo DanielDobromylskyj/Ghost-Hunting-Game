@@ -1,4 +1,5 @@
 import os
+import random
 import socket
 import threading
 import io
@@ -6,16 +7,14 @@ import time
 import tempfile
 
 from .file_api import encode_dict, decode_dict
-from .render import Render
 
 
 def send_value(conn, value, compressed=False):
     """ Sends a value of any available datatype """
-    buffer = io.StringIO()
+    buffer = io.BytesIO()
     encode_dict({"data": value}, buffer, should_compress=compressed)
     data = buffer.getvalue()
     buffer.close()
-
     conn.send(len(data).to_bytes(8))
     conn.send(data)
 
@@ -25,11 +24,12 @@ def recv_value(conn, compressed=False):
     length = int.from_bytes(conn.recv(8))
     data_encoded = conn.recv(length)
 
-    buffer = io.StringIO()
-    buffer.write(data_encoded)
-
+    buffer = io.BytesIO(data_encoded)
     decoded = decode_dict(buffer, is_compressed=compressed)
     buffer.close()
+
+    if "data" not in decoded:
+        return None
 
     return decoded["data"]
 
@@ -72,7 +72,7 @@ class Server:
 
     def __startup(self):
         """ Starts up the server, run in a thread (from the 'run' method)"""
-        with open(self.map_data, "rb") as f:
+        with open(self.map_path, "rb") as f:
             self.map_data = f.read()
 
         self.mode = "lobby"
@@ -83,20 +83,20 @@ class Server:
             for player in self.players
         ]
 
-
-
     def __handle_client(self, conn: socket.socket):
         """ Handles client connections """
         if self.mode == "starting":
-            send_value(self.sock, "server_still_starting")
+            send_value(conn, "server_still_starting")
+            time.sleep(1)
             return conn.close()
 
         elif self.mode != "lobby":
-            send_value(self.sock, "server_in_game")
+            send_value(conn, "server_in_game")
+            time.sleep(1)
             return conn.close()
 
-        send_value(self.sock, "connected")
-        player_info = recv_value(self.sock)
+        send_value(conn, "connected")
+        player_info = recv_value(conn)
 
         player = Player()
         player.recv_info(player_info)
@@ -126,7 +126,7 @@ class Server:
                 player_info = recv_value(conn)
                 self.players[player_index].recv_info(player_info)
 
-            elif request == "other_players_info":
+            elif request == "other_players_info": # At some stage make this only send close players / visible maybe
                send_value(conn, self.__get_players_information())
 
         return None
@@ -149,7 +149,7 @@ class Server:
 
 
 class Client:
-    def __init__(self, render_engine: Render, player: Player, host: str, port: int = 5678):
+    def __init__(self, render_engine, player: Player, host: str, port: int = 5678):
         self.address = (host, port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -157,6 +157,10 @@ class Client:
         self.player = player
         self.players = {}
         self.current_ping = 0
+        self.error = None
+
+    def hook_render_engine(self):
+        self.engine.client = self
 
     def connect(self) -> str | bool:
         """ Attempts to connect to the server, returns true / error message, if successful / failed"""
@@ -220,7 +224,7 @@ class Client:
     def load_map(self):
         """ Loads the map data from the servers loaded map and loads it into render engine """
         map_data = self.get_map_data()
-        fd, path = tempfile.mkstemp()
+        path = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=5)) + "_temp_map.bin"
 
         try:
             with open(path, "wb") as f:
@@ -239,10 +243,14 @@ class Client:
 
 
     def __start(self) -> None:
-        result = self.connect()
+        try:
+            result = self.connect()
 
-        if result is not True:
-            raise ConnectionRefusedError(result)
+            if result is not True:
+                raise ConnectionRefusedError(result)
+        except Exception as e:
+            self.error = str(e)
+            raise
 
         self.load_map()
         target_tps = self.get_server_tps()
@@ -272,4 +280,5 @@ class Client:
 
     def start(self) -> None:
         """ Handles all connections and data transfer, in the background"""
+        self.hook_render_engine()
         threading.Thread(target=self.__start, daemon=True).start()
