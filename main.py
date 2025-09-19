@@ -2,7 +2,7 @@ from engine import game
 import socket
 
 """
-How to host on uni wifi
+How to host on uni wifi (Not working)
 
 Open cmd -> run "ssh -R 80:localhost:5678 serveo.net"
 Copy the Hostname from the terminal (Do not include final slash or starting https://)
