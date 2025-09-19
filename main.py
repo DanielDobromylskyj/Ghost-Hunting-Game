@@ -1,4 +1,5 @@
 from engine import game
+import socket
 
 """
 How to host on uni wifi
@@ -13,12 +14,12 @@ Use that hostname for external clients
 debug = input("Debug Mode? (Y/n)").lower() != "n"
 
 if debug:
-    import socket
     host = socket.gethostbyname(socket.gethostname())
     username = "Test User"
     is_hosting = True
 
 else:
+    print("Local:", socket.gethostbyname(socket.gethostname()))
     host = input("Enter the host ip address: ")
     username = input("Enter Username: ")
     is_hosting = input("Are you hosting (y/N)").lower() == "y"
