@@ -1,12 +1,12 @@
 from engine import game
+from engine.hns import run_server as run_server_with_ngrok
 import socket
 
 """
-How to host on uni wifi (Not working)
+How to host on uni wifi
 
-Open cmd -> run "ssh -R 80:localhost:5678 serveo.net"
-Copy the Hostname from the terminal (Do not include final slash or starting https://)
-Use that hostname for external clients
+Ensure "ngrok" is installed / logged in 
+Then import network stuff from the nhs sub section of the engine module
 
 """
 
@@ -30,9 +30,9 @@ if is_hosting:
     import threading, time
 
     server = Server("data/demo_map.bin")
-    threading.Thread(target=server.run, daemon=True).start()
 
     print("Letting server start...")
+    threading.Thread(target=run_server_with_ngrok, args=(server.run, 5678), daemon=True).start()
     time.sleep(2)
 
     if debug:
