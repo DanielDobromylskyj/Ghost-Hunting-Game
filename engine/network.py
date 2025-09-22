@@ -125,7 +125,6 @@ class Server:
                 send_value(conn, self.SERVER_FPS)
 
             elif request == "player_info":
-                print(self.players[player_index].get_info())
                 send_value(conn, "ready")
                 player_info = recv_value(conn)
                 self.players[player_index].recv_info(player_info)
