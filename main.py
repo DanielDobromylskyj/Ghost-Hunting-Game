@@ -32,11 +32,13 @@ if is_hosting:
     server = Server("data/demo_map.bin")
 
     print("Letting server start...")
-    threading.Thread(target=run_server_with_ngrok, args=(server.run, 5678), daemon=True).start()
-    time.sleep(2)
+    threading.Thread(target=server.run, daemon=True).start()
+    time.sleep(5)
 
     if debug:
-        p2 = game.Game("Player 2", host)
+        h = input("HOST:")
+        port = int(input("PORT:"))
+        p2 = game.Game("Player 2", h, port)
         p2.client.set_ready(True)
 
 instance = game.Game(username, host)

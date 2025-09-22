@@ -29,6 +29,7 @@ def recv_value(conn, compressed=False):
     buffer.close()
 
     if "data" not in decoded:
+        print("Uh Oh:", decoded, data_encoded)
         return None
 
     return decoded["data"]
@@ -95,6 +96,8 @@ class Server:
             time.sleep(1)
             return conn.close()
 
+        print("Accepted Client Connection", conn.getpeername())
+
         send_value(conn, "connected")
         player_info = recv_value(conn)
 
@@ -122,6 +125,7 @@ class Server:
                 send_value(conn, self.SERVER_FPS)
 
             elif request == "player_info":
+                print(self.players[player_index].get_info())
                 send_value(conn, "ready")
                 player_info = recv_value(conn)
                 self.players[player_index].recv_info(player_info)

@@ -167,10 +167,14 @@ class Render:
 
         return True
 
+    def update_network(self):
+        self.client.player.position = tuple(self.position)
+
     def render_scene(self):
         if not self.server_ready():
             return self.render_lobby()
 
+        self.update_network()
         self.compute_shadow_mask()
 
         self.display.blit(self.__map.background_img, (-self.position[1], -self.position[0]))

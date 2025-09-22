@@ -4,13 +4,13 @@ from .render import Render as RenderEngine
 from .network import Client, Player
 
 class Game:
-    def __init__(self, username, host):
+    def __init__(self, username, host, port=5678):
         self.render = RenderEngine()
 
         self.player = Player()
         self.player.username = username
 
-        self.client = Client(self.render, self.player, host)
+        self.client = Client(self.render, self.player, host, port)
         self.client.start()
 
         self.clock = pygame.time.Clock()
