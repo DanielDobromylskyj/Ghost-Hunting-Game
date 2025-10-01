@@ -2,6 +2,8 @@ from PIL import Image
 import numpy as np
 import pygame
 
+from .logger import Log
+
 class DefaultAsset:
     raw = None
     def __init__(self, path):
@@ -61,6 +63,8 @@ class Texture2D(DefaultAsset):
                 pygame.init()
 
             self.pygame_surface = texture
+
+        Log.log(f"Loaded Texture2D: {path}")
 
         # get raw data
         return texture.get_buffer().raw

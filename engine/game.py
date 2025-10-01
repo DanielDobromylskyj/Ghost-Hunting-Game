@@ -2,10 +2,13 @@ import pygame
 
 from .render import Render as RenderEngine
 from .network import Client, Player
+from .logger import Log
 
 class Game:
-    def __init__(self, username, host, port=5678):
-        self.render = RenderEngine()
+    def __init__(self, username, host, port=5678, dont_display=False):
+        Log().new()
+
+        self.render = RenderEngine(dont_display=dont_display)
 
         self.player = Player()
         self.player.username = username
@@ -18,6 +21,7 @@ class Game:
 
 
     def start(self):
+        Log.log("Game starting")
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:

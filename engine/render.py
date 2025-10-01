@@ -6,6 +6,7 @@ import pygame
 from .network import Client
 from .assets import Texture2D
 from .map import LoadedMap
+from .logger import Log
 
 
 mf = pycl.mem_flags
@@ -19,13 +20,17 @@ class Render:
     QUALITY = 0.8   # The amount textures are downscaled
     RAY_COUNT = 4000
 
-    def __init__(self):
+    def __init__(self, dont_display=False):
         if not pygame.get_init():
             pygame.init()
 
         self.client: Client | None = None
         self.display_size = pygame.display.get_desktop_sizes()[0]
-        self.display = pygame.display.set_mode(self.display_size, pygame.SRCALPHA)
+
+        self.dont_display = dont_display
+        if not dont_display:
+            self.display = pygame.display.set_mode(self.display_size, pygame.SRCALPHA)
+            Log.log("Created window")
 
         self.font = pygame.sysfont.SysFont("monospace", 18)
 
@@ -43,6 +48,8 @@ class Render:
         self.__deltas = None
         self.position = [0, 0]
         self.view_height = 0.75
+
+        Log.log("Created OpenCL context")
 
         self.__load_kernels()
         self.__create_kernel_deltas()
@@ -72,14 +79,18 @@ class Render:
 
     def load_map(self, path):
         self.__assets = [] # I think I need to clear more than just assets
-        self.__map = LoadedMap(self, path)
-        self.pre_compute_maps()
 
-        self.__player_texture_id = self.load_texture("data/textures/player_place_holder.png", mode="RGBA")
+        if not self.dont_display:
+            self.__map = LoadedMap(self, path)
+            self.pre_compute_maps()
+
+            self.__player_texture_id = self.load_texture("data/textures/player_place_holder.png", mode="RGBA")
 
     def __load_kernels(self):
         with open("data/kernel/shadow_mask.cl", "r") as f:
             self.__program = pycl.Program(self.cl.context, f.read()).build()
+
+        Log.log("Loaded kernels")
 
     def __create_kernel_deltas(self):
         angle_delta = 360 / self.RAY_COUNT
@@ -91,15 +102,18 @@ class Render:
         ], dtype=np.float32)
 
         self.__deltas = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=deltas)
+        Log.log("Created kernel deltas")
 
     def pre_compute_maps(self):
         height_map = self.__map.compute_height_map()
         self.__height_map = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=height_map.data)
         self.__height_map_shape = height_map.shape
+        Log.log("Computed height map")
 
         light_map = self.__map.compute_light_map()
         self.__light_map = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=light_map.data)
         self.__light_map_shape = light_map.shape
+        Log.log("Computed light map")
 
 
 

@@ -7,6 +7,7 @@ import time
 import tempfile
 
 from .file_api import encode_dict, decode_dict
+from .logger import Log
 
 
 def send_value(conn, value, compressed=False):
@@ -96,7 +97,7 @@ class Server:
             time.sleep(1)
             return conn.close()
 
-        print("Accepted Client Connection", conn.getpeername())
+        conn_peer_name = conn.getpeername()
 
         send_value(conn, "connected")
         player_info = recv_value(conn)
@@ -163,6 +164,7 @@ class Client:
         self.error = None
 
     def hook_render_engine(self):
+        Log.log("Client hooked render engine")
         self.engine.client = self
 
     def connect(self) -> str | bool:
@@ -171,14 +173,17 @@ class Client:
         response = recv_value(self.sock)
 
         if response != "connected":
+            Log.log(f"Client connection failed: {response}")
             return response
 
         send_value(self.sock, self.player.get_info())
+        Log.log(f"Server accepted client")
 
         return True
 
     def disconnect(self) -> None:
         """ Safely disconnects from server """
+        Log.log(f"Disconnecting...")
         send_value(self.sock, "disconnect")
         self.sock.close()
 
@@ -261,22 +266,26 @@ class Client:
         tick_counter = 0
 
         while True:
-            start = time.time()
+            start = time.perf_counter()
 
             # Networking Update Loop
 
             self.send_player_info()
             self.get_other_players_info()
 
-            if tick_counter % target_tps:
+            if tick_counter % target_tps == 0:
                 self.get_ping()
 
 
             # End Of Networking Loop
 
-            elapsed = time.time() - start
+            elapsed = time.perf_counter() - start
             if elapsed < target_time:
                 time.sleep(target_time - elapsed)
+
+            else:
+                if tick_counter % target_tps == 0:
+                    print(f"[WARNING] Low Network TPS ({round(1 / elapsed, 1)}/{target_tps}), is the client / server overloaded?")
 
             tick_counter += 1
 

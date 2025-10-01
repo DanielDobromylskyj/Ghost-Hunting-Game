@@ -1,3 +1,5 @@
+import random
+
 from engine import game
 from engine.hns import run_server as run_server_with_ngrok
 import socket
@@ -34,12 +36,6 @@ if is_hosting:
     print("Letting server start...")
     threading.Thread(target=server.run, daemon=True).start()
     time.sleep(5)
-
-    if debug:
-        h = input("HOST:")
-        port = int(input("PORT:"))
-        p2 = game.Game("Player 2", h, port)
-        p2.client.set_ready(True)
 
 instance = game.Game(username, host)
 instance.start()
