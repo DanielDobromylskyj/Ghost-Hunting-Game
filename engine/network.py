@@ -5,6 +5,7 @@ import threading
 import io
 import time
 import tempfile
+from typing import Any
 
 from .file_api import encode_dict, decode_dict
 from .logger import Log
@@ -16,13 +17,13 @@ def send_value(conn, value, compressed=False):
     encode_dict({"data": value}, buffer, should_compress=compressed)
     data = buffer.getvalue()
     buffer.close()
-    conn.send(len(data).to_bytes(8))
+    conn.send(len(data).to_bytes(8, byteorder="big"))
     conn.send(data)
 
 
 def recv_value(conn, compressed=False):
     """ Receives a value of any available datatype """
-    length = int.from_bytes(conn.recv(8))
+    length = int.from_bytes(conn.recv(8), byteorder="big")
     data_encoded = conn.recv(length)
 
     buffer = io.BytesIO(data_encoded)
@@ -39,19 +40,21 @@ def recv_value(conn, compressed=False):
 class Player:
     username: str = "Unknown"
     last_update: float = 0.0
-    position: tuple = (0, 0)
+    position: tuple = (0, 0),
+    rotation: float = 0,
     is_ghost: bool = False
     is_client: bool = False
     ready: bool = False
 
     def get_info(self):
         return {"username": self.username, "position": self.position, "is_ghost": self.is_ghost,
-                "is_client": self.is_client, "ready": self.ready}
+                "is_client": self.is_client, "ready": self.ready, "rotation": self.rotation}
 
     def recv_info(self, info):
         self.username = info["username"]
         self.position = info["position"]
         self.is_ghost = info["is_ghost"]
+        self.rotation = info["rotation"]
         self.ready = info["ready"]
         self.last_update = time.time()
 
@@ -167,7 +170,7 @@ class Client:
         Log.log("Client hooked render engine")
         self.engine.client = self
 
-    def connect(self) -> str | bool:
+    def connect(self) -> bool | None | Any:
         """ Attempts to connect to the server, returns true / error message, if successful / failed"""
         self.sock.connect(self.address)
         response = recv_value(self.sock)
@@ -201,12 +204,16 @@ class Client:
     def get_map_data(self) -> bytes:
         """ Gets the raw file data of the servers loaded map"""
         send_value(self.sock, "map_data")
-        return recv_value(self.sock, compressed=True)
+        map_data = recv_value(self.sock, compressed=True)
+        assert isinstance(map_data, bytes)
+        return map_data
 
-    def get_server_tps(self):
+    def get_server_tps(self) -> int:
         """ Gets the servers desired TPS"""
         send_value(self.sock, "tps")
-        return recv_value(self.sock)
+        v = recv_value(self.sock)
+        assert isinstance(v, int)
+        return v
 
     def send_player_info(self):
         """ Update the servers version of out data"""
@@ -215,7 +222,7 @@ class Client:
         send_value(self.sock, self.player.get_info())
 
     def get_other_players_info(self):
-        """ Retrieves and updates all player data (including our own)"""
+        """ Retrieves and updates all player data (including our own) """
         send_value(self.sock, "other_players_info")
         data = recv_value(self.sock)
 

@@ -3,10 +3,12 @@ import math
 import pyopencl as pycl
 import pygame
 
+from .item import Item
 from .network import Client
 from .assets import Texture2D
 from .map import LoadedMap
 from .logger import Log
+from .model import Model
 
 
 mf = pycl.mem_flags
@@ -20,7 +22,11 @@ class Render:
     QUALITY = 0.8   # The amount textures are downscaled
     RAY_COUNT = 4000
 
-    def __init__(self, dont_display=False):
+    DEBUG = False
+
+    def __init__(self, game, dont_display=False):
+        self.game = game
+
         if not pygame.get_init():
             pygame.init()
 
@@ -47,7 +53,10 @@ class Render:
         self.__map = None
         self.__deltas = None
         self.position = [0, 0]
+        self.rotation = pygame.math.Vector2(1, 0)
+        self.deg_rotation = 0.0
         self.view_height = 0.75
+        self.gui_scale = 1
 
         Log.log("Created OpenCL context")
 
@@ -57,6 +66,64 @@ class Render:
         self.shadow_mask = np.empty(self.display_size, dtype=np.uint8)
         self.shadow_mask_buffer = pycl.Buffer(self.cl.context, mf.READ_WRITE, size=self.shadow_mask.nbytes, hostbuf=None)
         self.shadow_mask_surface = pygame.Surface(self.display_size, pygame.SRCALPHA)
+
+        self.player_model = Model("data/models/player.json")
+        self.inventory_texture = self.create_inventory_texture()
+
+        self.player_models = {}
+        self.is_ghost = False
+
+    def debug_toggle(self):
+        self.DEBUG = not self.DEBUG
+
+    def create_inventory_texture(self) -> pygame.Surface:
+        surface = pygame.Surface((300 * self.gui_scale + 1, 100 * self.gui_scale + 1), pygame.SRCALPHA)
+
+        BORDER_LIGHT = (165, 165, 165)
+        BORDER_DARK = (94, 94, 94)
+
+        delta = 100 * self.gui_scale
+        for i in range(3):
+            x_offset = delta * i
+            item = self.game.inventory[i]
+
+            if item is not None:
+                texture = pygame.transform.scale(item.get_model(), (100 * self.gui_scale, 100 * self.gui_scale))
+                surface.blit(texture, (x_offset, 0))
+
+            pygame.draw.line(
+                surface,
+                BORDER_LIGHT,
+                (x_offset, 0),
+                (x_offset, delta)
+            )
+
+            pygame.draw.line(
+                surface,
+                BORDER_LIGHT,
+                (x_offset, 0),
+                (x_offset + delta, 0)
+            )
+
+            pygame.draw.line(
+                surface,
+                BORDER_DARK,
+                (x_offset, delta),
+                (x_offset + delta, delta)
+            )
+
+            pygame.draw.line(
+                surface,
+                BORDER_DARK,
+                (x_offset + delta, 0),
+                (x_offset + delta, delta)
+            )
+
+        return surface
+
+    def render_hud(self, deltaTime):
+        self.display.blit(self.inventory_texture, (0, self.display_size[1] - self.inventory_texture.get_height()))
+        self.game.tablet.tick(self.display, deltaTime)
 
     def reload_assets(self):
         """ Reload assets, including any changed settings"""
@@ -89,6 +156,7 @@ class Render:
     def __load_kernels(self):
         with open("data/kernel/shadow_mask.cl", "r") as f:
             self.__program = pycl.Program(self.cl.context, f.read()).build()
+            self.__shadow_func = self.__program.mask
 
         Log.log("Loaded kernels")
 
@@ -116,12 +184,11 @@ class Render:
         Log.log("Computed light map")
 
 
-
     def compute_shadow_mask(self):
         pycl.enqueue_fill_buffer(self.cl.queue, self.shadow_mask_buffer, np.uint8(255), 0, self.shadow_mask.nbytes)
         max_step_count = min(self.display_size) // 2
 
-        self.__program.mask(
+        self.__shadow_func(
             self.cl.queue, (self.RAY_COUNT,), None,
             self.shadow_mask_buffer,
             self.__height_map,
@@ -183,10 +250,33 @@ class Render:
 
     def update_network(self):
         self.client.player.position = tuple(self.position)
+        self.client.player.rotation = float(self.deg_rotation)
 
-    def render_scene(self):
+    def update_player_orientation(self, mx, my):
+        dx = (self.display_size[0] // 2) - mx
+        dy = (self.display_size[1] // 2) - my
+
+        rotation = math.atan2(dy, dx) - 1.570796
+        self.player_model.set_rotation(rotation)  # Takes in radians
+
+        self.deg_rotation = math.degrees(rotation)
+        self.rotation = pygame.math.Vector2(1, 0).rotate(self.deg_rotation)
+
+    def set_player_moving(self, is_moving: bool):
+        if is_moving:
+            self.player_model.set_animation("walking")
+        else:
+            self.player_model.set_animation("idle")
+
+    def render_scene(self, deltaTime):
+        if self.dont_display:
+            return None
+
+        self.player_model.step(deltaTime)
+
         if not self.server_ready():
-            return self.render_lobby()
+            self.render_lobby()
+            return None
 
         self.update_network()
         self.compute_shadow_mask()
@@ -205,22 +295,50 @@ class Render:
 
         for name, player in self.client.players.items():
             if name != self.client.player.username:
-                self.render_player(*player.position)
+                self.render_player(player)
 
-        self.display.blit(self.shadow_mask_surface, (0, 0))
+        if not self.DEBUG:
+            self.display.blit(self.shadow_mask_surface, (0, 0))
+
+        self.render_hud(deltaTime)
         return None
 
     def render_self(self):
-        texture = self.get_asset(self.__player_texture_id)
-        self.display.blit(texture.pygame_surface, (self.display_size[0] // 2, self.display_size[1] // 2))
+        self.render_model(self.player_model, self.display_size[0] // 2, self.display_size[1] // 2)
 
-    def render_player(self, cx, cy):
-        texture = self.get_asset(self.__player_texture_id)
+    def render_model(self, model: Model, cx, cy):
+        texture = model.get_current()
 
-        self.display.blit(texture.pygame_surface, (cx + (self.display_size[0] // 2) - self.position[1],
-                                                   cy + (self.display_size[1] // 2) - self.position[0]))
+        self.display.blit(texture, (cx - (texture.get_width() // 2), cy - (texture.get_height() // 2)))
+
+    def render_player(self, player):
+        if len(player.position) == 2:  # This networking code is old, and fucked. Royally
+            player_y, player_x = player.position
+            rotation = player.rotation
+        else:
+            player_y, player_x = player.position[0]
+            rotation = player.rotation[0]
+
+        if player.username not in self.player_models:
+            self.player_models[player.username] = Model("data/models/player.json")
+
+        texture = pygame.transform.rotate(self.player_models[player.username].get_current(), -rotation)
+
+        # Offset so the model is centered
+        player_x -= texture.get_width() // 2
+        player_y -= texture.get_height() // 2
+
+        us_x, us_y = self.position[1], self.position[0]  # x/y are flipped and its too much effort to change it
+
+        wx = -us_x + (self.display_size[0] // 2)
+        wy = -us_y + (self.display_size[1] // 2)
+
+        self.display.blit(texture, (wx + player_x, wy + player_y))
 
     def display_fps(self, fps):
+        if self.dont_display:
+            return
+
         rect = self.font.render(f"FPS: {round(fps)}", True, (255, 0, 0))
         self.display.blit(rect, (0, 0))
 

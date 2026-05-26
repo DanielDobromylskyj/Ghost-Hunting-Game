@@ -1,0 +1,19 @@
+{
+  "frames": [
+    "data/textures/models/player/standing_1.png",
+    "data/textures/models/player/standing_2.png"
+  ],
+
+  "animations": {
+    "idle": {
+      "indexes": [0],
+      "loop_time": 1
+    },
+    "walking": {
+      "indexes": [0, 1],
+      "loop_time": 1
+    }
+  },
+
+  "default": "idle"
+}

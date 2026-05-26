@@ -13,10 +13,9 @@ def move_around(player: game.Game):
 
 host = socket.gethostbyname(socket.gethostname())
 
-p2 = game.Game("Player 2", host, dont_display=True)
+p2 = game.Game("Player 2", host, dont_display=False)
 p2.client.set_ready(True)
 
-threading.Thread(target=move_around, args=(p2,)).start()
+#threading.Thread(target=move_around, args=(p2,)).start()
 
-while True:
-    p2.render.update_network()
+p2.start()

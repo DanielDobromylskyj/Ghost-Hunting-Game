@@ -1,16 +1,5 @@
-import random
-
 from engine import game
-from engine.hns import run_server as run_server_with_ngrok
 import socket
-
-"""
-How to host on uni wifi
-
-Ensure "ngrok" is installed / logged in 
-Then import network stuff from the nhs sub section of the engine module
-
-"""
 
 
 debug = input("Debug Mode? (Y/n)").lower() != "n"
@@ -35,8 +24,9 @@ if is_hosting:
 
     print("Letting server start...")
     threading.Thread(target=server.run, daemon=True).start()
-    time.sleep(5)
+    time.sleep(3)
 
 instance = game.Game(username, host)
+instance.render.DEBUG = True
 instance.start()
 

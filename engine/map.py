@@ -99,7 +99,7 @@ class LoadedMap(Map):
 
     def load(self, path):
         def read_string(file, length=2):
-            length = int.from_bytes(file.read(length))
+            length = int.from_bytes(file.read(length), byteorder="big")
 
             if length == 0:
                 return None
@@ -108,27 +108,27 @@ class LoadedMap(Map):
             return content.decode()
 
         def load_map(file):
-            width, height = int.from_bytes(file.read(2)), int.from_bytes(file.read(2))
-            data_length = int.from_bytes(file.read(4))
+            width, height = int.from_bytes(file.read(2), byteorder="big"), int.from_bytes(file.read(2), byteorder="big")
+            data_length = int.from_bytes(file.read(4), byteorder="big")
             data = file.read(data_length)
 
             return np.frombuffer(data, dtype=np.float32).reshape(width, height)
 
         layout = {}
         with open(path, "rb") as f:
-            layout["version"] = int.from_bytes(f.read(1))
+            layout["version"] = int.from_bytes(f.read(1), byteorder="big")
 
             if layout["version"] != self.MAP_VERSION:
                 raise MapLoadingException("Invalid map version!")
 
             layout["background"] = read_string(f)
-            object_count = int.from_bytes(f.read(4))
+            object_count = int.from_bytes(f.read(4), byteorder="big")
 
             layout["objects"] = [
                 {
                     "name": read_string(f),
-                    "position": (int.from_bytes(f.read(2)), int.from_bytes(f.read(2))),
-                    "height": int.from_bytes(f.read(2)) / 1000,
+                    "position": (int.from_bytes(f.read(2), byteorder="big"), int.from_bytes(f.read(2), byteorder="big")),
+                    "height": int.from_bytes(f.read(2), byteorder="big") / 1000,
                     "path": read_string(f),
                 } for _ in range(object_count)
             ]
