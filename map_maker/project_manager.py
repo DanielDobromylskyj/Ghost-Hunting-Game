@@ -5,6 +5,9 @@ import maker_v2
 
 
 def save_project(path, room_layout: list[maker_v2.Room], object_layout: list):
+    if not path:
+        return
+
     with open(path, "w") as f:
         json.dump({
             "rooms": [

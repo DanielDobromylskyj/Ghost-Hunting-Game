@@ -268,7 +268,10 @@ class App:
             "walls": ("Left-Click (On Room) -> Select a room to edit",
                       "Left-Click (On '+' Icon) -> Create a new doorway",
                       "Left-Click + Drag (On Door Arrow) -> Relocate a doorway to a new location",
-                      "Right-Click (On Door Arrow) -> Open doorway config for a given doorway")
+                      "Right-Click (On Door Arrow) -> Open doorway config for a given doorway"),
+            "objects": ("Left-Click + Drag -> Move Objects around",
+                        "N -> Create new object",
+                        "G -> Toggle Grid Snap")
         }
 
         self.camera_position = [0, 0]
@@ -287,6 +290,9 @@ class App:
         self.object_layout: list = []
 
         self.object_layer_surface = None
+        self.dragging_object = None
+        self.dragging_object_loc = [0, 0]
+        self.object_grid_snap = True
         self.create_object_layer()
 
         self.grid_snap = 25
@@ -846,10 +852,21 @@ class App:
     def create_object_layer(self):
         self.object_layer_surface = pygame.Surface(self.display.get_size(), pygame.SRCALPHA)
 
-        for surface, pos, path in self.object_layout:
-            self.object_layer_surface.blit(
-                pygame.transform.scale_by(surface, self.camera_scale), self.__world_space_to_camera(*pos)
-            )
+        for i, (surface, pos, path) in enumerate(self.object_layout):
+            if i == self.dragging_object:
+                surface = pygame.transform.scale_by(surface, self.camera_scale).convert_alpha()
+                mask = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                mask.fill((0, 0, 0, 100))
+
+                surface.blit(mask, (0, 0))
+
+                self.object_layer_surface.blit(
+                    surface, self.__world_space_to_camera(*pos)
+                )
+            else:
+                self.object_layer_surface.blit(
+                    pygame.transform.scale_by(surface, self.camera_scale), self.__world_space_to_camera(*pos)
+                )
 
     def add_object(self):
         path = filedialog.askopenfilename(defaultextension="png", filetypes=[("PNG files", "*.png")])
@@ -881,14 +898,29 @@ class App:
 
     def save(self):
         path = filedialog.asksaveasfilename(defaultextension="project", filetypes=[("Map Maker Project File", "*.project")])
+        if not path: return
+
         project_manager.save_project(path, self.room_layout, self.object_layout)
         print("Save Completed!")
 
     def load(self):
         path = filedialog.askopenfilename(defaultextension="project", filetypes=[("Map Maker Project File", "*.project")])
+        if not path: return
+
         self.room_layout, self.object_layout = project_manager.load_project(path)
         self.redraw_all_rooms()
         print("Load Completed!")
+
+    def select_object(self, mx, my):
+        wx, wy = self.__camera_to_world_space(mx, my)
+        # Don't exit early, we want the top most object
+        for i, (img, pos, path) in enumerate(self.object_layout):
+            if pos[0] < wx < pos[0] + img.get_width():
+                if pos[1] < wy < pos[1] + img.get_height():
+                    self.dragging_object = i
+                    self.dragging_object_loc = pos
+
+        self.create_object_layer()
 
     def run(self):
         self.running = True
@@ -927,8 +959,9 @@ class App:
                         if self.editing_layer == "objects":
                             self.add_object()
 
-
-
+                    if event.key == pygame.K_g:
+                        if self.editing_layer == "objects":
+                            self.object_grid_snap = not self.object_grid_snap
 
                 if event.type == pygame.MOUSEMOTION:
                     if self.mouse_held and not self.dragging:
@@ -944,18 +977,23 @@ class App:
                         self.create_object_layer()  # Update the objects
 
                     #if self.dragging:
-                    if self.editing_layer == "walls":
-                        if self.wall_door_dragging is not None:
-                            wall_index, door_index = self.wall_door_dragging
-                            wall = self.selected_room.walls[wall_index]
-                            dx, dy = event.rel
+                    else:
+                        if self.editing_layer == "walls":
+                            if self.wall_door_dragging is not None:
+                                wall_index, door_index = self.wall_door_dragging
+                                wall = self.selected_room.walls[wall_index]
+                                dx, dy = event.rel
 
-                            delta = dy  if wall.is_vertical else dx
-                            scaled_delta = (delta * (1 / self.camera_scale))
-                            wall.doors[door_index].offset += scaled_delta
+                                delta = dy  if wall.is_vertical else dx
+                                scaled_delta = (delta * (1 / self.camera_scale))
+                                wall.doors[door_index].offset += scaled_delta
 
-                            self.selected_room.render_room()
-                            self.render_door_creation_points()
+                                self.selected_room.render_room()
+                                self.render_door_creation_points()
+
+                        if self.dragging and self.editing_layer == "objects" and self.dragging_object is not None:
+                            self.dragging_object_loc[0] += event.rel[0] * (1 / self.camera_scale)
+                            self.dragging_object_loc[1] += event.rel[1] * (1 / self.camera_scale)
 
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
@@ -976,6 +1014,9 @@ class App:
 
                             if self.editing_layer == "rooms":
                                 self.select_room(mouse_x, mouse_y)
+
+                            if self.editing_layer == "objects":
+                                self.select_object(mouse_x, mouse_y)
 
                     if event.button in (1, 3) and self.selected_room is not None:
                         if self.editing_layer == "walls":
@@ -1013,6 +1054,22 @@ class App:
                         if self.dragging:
                             if self.editing_layer == "rooms":
                                 self.create_new_room(mouse_x, mouse_y)
+
+                            if self.editing_layer == "objects":
+                                if self.dragging_object is not None:
+                                    if self.object_grid_snap:
+                                        self.dragging_object_loc = self.__snap_point_to_grid(*self.dragging_object_loc)
+
+                                    self.add_undo_step("object-move", (
+                                        self.dragging_object, self.dragging_start,
+                                        self.dragging_object_loc
+                                    ))
+
+
+                                    self.object_layout[self.dragging_object][1][0] = self.dragging_object_loc[0]
+                                    self.object_layout[self.dragging_object][1][1] = self.dragging_object_loc[1]
+                                    self.dragging_object = None
+                                    self.create_object_layer()
 
                         else:
                             if self.editing_layer == "walls":
@@ -1086,6 +1143,16 @@ class App:
 
                     if self.wall_door_config_surf:
                         self.display.blit(self.wall_door_config_surf, (self.display.get_width() - 400, 0))
+
+            if self.dragging and self.editing_layer == "objects" and self.dragging_object is not None:
+                img, _, _ = self.object_layout[self.dragging_object]
+
+                pos = self.dragging_object_loc
+
+                if self.object_grid_snap:
+                    pos = self.__snap_point_to_grid(*pos)
+
+                self.display.blit(img, self.__world_space_to_camera(*pos))
 
 
             self.display.blit(self.object_layer_surface, (0, 0))
