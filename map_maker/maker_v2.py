@@ -292,6 +292,7 @@ class App:
         self.object_layer_surface = None
         self.dragging_object = None
         self.dragging_object_loc = [0, 0]
+        self.dragging_object_start_loc = [0, 0]
         self.object_grid_snap = True
         self.create_object_layer()
 
@@ -647,7 +648,28 @@ class App:
             room.hiding_spot = old
             room.render_room()
 
-            self.redo_log.append(("door_config-width", (room, old, new)))
+            self.redo_log.append(("toggle_hiding_spot", (room, old, new)))
+
+        elif event == "new-object":
+            room, index, obj = data
+
+            self.object_layout.pop(index)
+
+            self.create_object_layer()
+
+            self.redo_log.append(("new-object", (room, index, obj)))
+
+        elif event == "object-move":
+            index, start, end = data
+
+            print(index, start, end)
+
+            self.object_layout[index][1][0] = start[0]
+            self.object_layout[index][1][1] = start[1]
+
+            self.create_object_layer()
+
+            self.redo_log.append(("object-move", (index, start, end)))
 
         else:
             print("Unknown undo event:", event)
@@ -726,7 +748,26 @@ class App:
             room.hiding_spot = new
             room.render_room()
 
-            self.undo_log.append(("door_config-width", (room, old, new)))
+            self.undo_log.append(("toggle_hiding_spot-width", (room, old, new)))
+
+        elif event == "new-object":
+            room, index, obj = data
+
+            self.object_layout.insert(index, obj)
+
+            self.create_object_layer()
+
+            self.redo_log.append(("new-object", (room, index, obj)))
+
+        elif event == "object-move":
+            index, start, end = data
+
+            self.object_layout[index][1][0] = end[0]
+            self.object_layout[index][1][1] = end[1]
+
+            self.create_object_layer()
+
+            self.redo_log.append(("object-move", (index, start, end)))
 
         else:
             print("Unknown redo event:", event)
@@ -880,7 +921,7 @@ class App:
             img = pygame.image.load(path).convert_alpha()
             self.object_layout.append((img, pos, path))
 
-            self.add_undo_step("new-object", (self.selected_room, len(self.object_layout) - 1))
+            self.add_undo_step("new-object", (self.selected_room, len(self.object_layout) - 1, (img, pos, path)))
             self.create_object_layer()
         except:  # NOQA
             pass
@@ -919,6 +960,7 @@ class App:
                 if pos[1] < wy < pos[1] + img.get_height():
                     self.dragging_object = i
                     self.dragging_object_loc = pos
+                    self.dragging_object_start_loc = (*pos,)  # Copy the tuple (store it for later)
 
         self.create_object_layer()
 
@@ -1061,8 +1103,8 @@ class App:
                                         self.dragging_object_loc = self.__snap_point_to_grid(*self.dragging_object_loc)
 
                                     self.add_undo_step("object-move", (
-                                        self.dragging_object, self.dragging_start,
-                                        self.dragging_object_loc
+                                        self.dragging_object, (self.dragging_object_start_loc[0], self.dragging_object_start_loc[1]),
+                                        (self.dragging_object_loc[0], self.dragging_object_loc[1])
                                     ))
 
 
