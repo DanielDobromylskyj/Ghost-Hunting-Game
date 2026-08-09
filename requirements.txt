@@ -3,3 +3,4 @@ pyopencl
 numpy
 matplotlib
 lz4
+sounddevice

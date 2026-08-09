@@ -108,7 +108,7 @@ class Wall:
         self.is_vertical = is_vertical
 
     def __repr__(self):
-        return f"Door(vertical={self.is_vertical}, doors={self.doors})"
+        return f"Wall(vertical={self.is_vertical}, doors={self.doors})"
 
 class Room:
     room_id: int
@@ -259,7 +259,7 @@ class App:
         self.running = False
 
         self.layers = ["rooms"]
-        self.editing_modes = ["rooms", "walls", "objects"]
+        self.editing_modes = ["rooms", "walls", "objects", "lights"]
         self.editing_layer = "rooms"
 
         self.tool_tips = {
@@ -271,7 +271,9 @@ class App:
                       "Right-Click (On Door Arrow) -> Open doorway config for a given doorway"),
             "objects": ("Left-Click + Drag -> Move Objects around",
                         "N -> Create new object",
-                        "G -> Toggle Grid Snap")
+                        "G -> Toggle Grid Snap"),
+            "lights": ("Left-Click -> Add a new light",
+                       "Alt + Left-Click -> Add snapped light switch to wall (Hold Alt to preview)")
         }
 
         self.camera_position = [0, 0]
@@ -312,6 +314,9 @@ class App:
         self.wall_drag_start_offset = None
         self.wall_door_config_surf = None
         self.wall_door_config_door = None
+
+        self.lights = []
+        self.switches = []
 
         # Testing data only:
         self.room_layout[0].walls[1].doors = [Door(), Door()]       # NOQA
@@ -491,10 +496,11 @@ class App:
             if x[0] is None:
                 self.wall_door_creation_locations.remove(x)
 
-    def select_room(self, mouse_x, mouse_y, dont_render=False):
-        self.selected_room = None
-        self.selected_room_cache = None
-        self.wall_door_config_surf = None
+    def select_room(self, mouse_x, mouse_y, dont_render=False, dont_set_just_return=False):
+        if not dont_set_just_return:
+            self.selected_room = None
+            self.selected_room_cache = None
+            self.wall_door_config_surf = None
 
         world_x, world_y = self.__camera_to_world_space(mouse_x, mouse_y)
 
@@ -502,9 +508,14 @@ class App:
             if (room.world_x < world_x < room.world_x + room.width and
                 room.world_y < world_y < room.world_y + room.height):
 
+                if dont_set_just_return:
+                    return room
+
                 self.selected_room = room
                 break
 
+        if dont_set_just_return:
+            return None
 
         if self.editing_layer == "walls":
             self.render_door_creation_points()
@@ -662,14 +673,26 @@ class App:
         elif event == "object-move":
             index, start, end = data
 
-            print(index, start, end)
-
             self.object_layout[index][1][0] = start[0]
             self.object_layout[index][1][1] = start[1]
 
             self.create_object_layer()
 
             self.redo_log.append(("object-move", (index, start, end)))
+
+        elif event == "light-add":
+            index, light_data = data
+
+            self.lights.pop(index)
+
+            self.redo_log.append(("light-add", (index, light_data)))
+
+        elif event == "switch-add":
+            index, switch_data = data
+
+            self.switches.pop(index)
+
+            self.redo_log.append(("switch-add", (index, switch_data)))
 
         else:
             print("Unknown undo event:", event)
@@ -757,7 +780,7 @@ class App:
 
             self.create_object_layer()
 
-            self.redo_log.append(("new-object", (room, index, obj)))
+            self.undo_log.append(("new-object", (room, index, obj)))
 
         elif event == "object-move":
             index, start, end = data
@@ -767,7 +790,22 @@ class App:
 
             self.create_object_layer()
 
-            self.redo_log.append(("object-move", (index, start, end)))
+            self.undo_log.append(("object-move", (index, start, end)))
+
+        elif event == "light-add":
+            index, light = data
+
+            self.lights.insert(index, light)
+
+            self.undo_log.append(("light-add", (index, light)))
+
+        elif event == "switch-add":
+            index, switch = data
+
+            self.switches.insert(index, switch)
+
+            self.undo_log.append(("switch-add", (index, switch)))
+
 
         else:
             print("Unknown redo event:", event)
@@ -941,14 +979,22 @@ class App:
         path = filedialog.asksaveasfilename(defaultextension="project", filetypes=[("Map Maker Project File", "*.project")])
         if not path: return
 
-        project_manager.save_project(path, self.room_layout, self.object_layout)
+        project_manager.save_project(path, self.room_layout, self.object_layout, self.lights, self.switches)
         print("Save Completed!")
+
+    def export(self):
+        path = filedialog.asksaveasfilename(defaultextension="bin",
+                                            filetypes=[("Map Binary", "*.bin")])
+        if not path: return
+
+        project_manager.export(path, self.room_layout, self.object_layout, self.lights, self.switches)
+        print("Export Completed!")
 
     def load(self):
         path = filedialog.askopenfilename(defaultextension="project", filetypes=[("Map Maker Project File", "*.project")])
         if not path: return
 
-        self.room_layout, self.object_layout = project_manager.load_project(path)
+        self.room_layout, self.object_layout, self.lights, self.switches = project_manager.load_project(path)
         self.redraw_all_rooms()
         print("Load Completed!")
 
@@ -963,6 +1009,60 @@ class App:
                     self.dragging_object_start_loc = (*pos,)  # Copy the tuple (store it for later)
 
         self.create_object_layer()
+
+    def find_position_of_lightswitch(self, mx, my):
+        room = self.select_room(mx, my, dont_render=True, dont_set_just_return=True)
+
+        if not room:
+            return None
+
+        wx, wy = self.__camera_to_world_space(mx, my)
+
+        segments = [
+            (room.world_x, room.world_y, 0, 1),
+            (room.world_x + room.width, room.world_y, -1, 0),
+            (room.world_x, room.world_y + room.height, 0, -1),
+            (room.world_x, room.world_y, 1, 0)
+        ]
+
+        def snap_to_wall(target_wall: Wall, tl_x, tl_y):
+            if target_wall.is_vertical:
+                return tl_x, wy
+
+            else:
+                return wx, tl_y
+
+
+        closest = None
+        min_distance = 50
+
+        for wall_index, wall in enumerate(room.walls):
+            if wall is None:
+                continue
+
+            sx, sy, rot_x, rot_y = segments[wall_index]
+
+            if wall.is_vertical:
+                if abs(sx - wx) < min_distance:
+                    if sy < wy < sy + room.height:
+                        snap_x, snap_y = snap_to_wall(wall, sx, sy)
+                        closest = (snap_x, snap_y, rot_x, rot_y)
+                        min_distance = ((wx - snap_x) ** 2 + (wy - snap_y) ** 2) ** 0.5
+
+            else:
+                if abs(sy - wy) < min_distance:
+                    if sx < wy < sx + room.width:
+                        snap_x, snap_y = snap_to_wall(wall, sx, sy)
+                        closest = (snap_x, snap_y, rot_x, rot_y)
+                        min_distance = ((wx - snap_x) ** 2 + (wy - snap_y) ** 2) ** 0.5
+
+        if closest:
+            return closest
+
+        return None
+
+
+
 
     def run(self):
         self.running = True
@@ -997,6 +1097,10 @@ class App:
                         else:
                             self.print_log()
 
+                    if event.key == pygame.K_e:
+                        if event.mod & pygame.KMOD_CTRL:
+                            self.export()
+
                     if event.key == pygame.K_n:
                         if self.editing_layer == "objects":
                             self.add_object()
@@ -1018,7 +1122,6 @@ class App:
 
                         self.create_object_layer()  # Update the objects
 
-                    #if self.dragging:
                     else:
                         if self.editing_layer == "walls":
                             if self.wall_door_dragging is not None:
@@ -1044,6 +1147,35 @@ class App:
                             self.selected_room is not None and
                             mouse_x > self.display.get_width() - 400):
                             self.clicked_on_room_preview(mouse_x - (self.display.get_width() - 400), mouse_y)
+
+                        if self.editing_layer == "lights":  # todo - implement: modifying
+                            self.select_room(mouse_x, mouse_y, dont_render=True)
+
+                            if pygame.key.get_mods() & pygame.KMOD_ALT:
+                                data = self.find_position_of_lightswitch(mouse_x, mouse_y)
+
+                                if data:
+                                    x, y, rx, ry = data
+
+                                    self.switches.append((x, y, rx, ry, self.selected_room.room_id))
+                                    self.add_undo_step("switch-add", (len(self.switches) - 1, self.switches[-1]))
+
+                            else:
+                                # [ [(x, y), brightness {0f-1f}, radius {int}, on_by_default {bool}, room_id], ...]
+
+                                if self.selected_room:
+                                    if len(self.lights) == 63:
+                                        print("Max lights in-use (63) Ask daniel to update it to a 128 bit uint")
+                                        return
+
+                                    self.lights.append([
+                                        self.__camera_to_world_space(mouse_x, mouse_y),
+                                        0.8, 200, True,
+                                        self.selected_room.room_id
+                                    ])
+
+                                    self.add_undo_step("light-add", (len(self.lights)-1, self.lights[-1]))
+
 
                         if (self.editing_layer == "walls" and
                             self.wall_door_config_surf is not None and
@@ -1196,6 +1328,36 @@ class App:
 
                 self.display.blit(img, self.__world_space_to_camera(*pos))
 
+            if self.editing_layer == "lights":
+                if pygame.key.get_mods() & pygame.KMOD_ALT:  # render possible switch position
+                    position = self.find_position_of_lightswitch(mouse_x, mouse_y)
+
+                    if position:
+                        xy = self.__world_space_to_camera(position[0], position[1])
+                        pygame.draw.line(
+                            self.display,
+                            (24, 216, 249),
+                            xy,
+                            [xy[0] + 10 * position[2], xy[1] + 10 * position[3]],
+                            width=max(1, round(5 * self.camera_scale))
+                        )
+
+                for light in self.lights:  # [(x, y), brightness {0f-1f}, radius {int}, on_by_default {bool}, room_id]
+                    (x, y), brightness, radius, _, _ = light
+
+                    pygame.draw.circle(
+                        self.display,
+                        (255*brightness, 0, 0),
+                        self.__world_space_to_camera(x, y),
+                        radius*self.camera_scale, width=1
+                    )
+
+                    pygame.draw.circle(
+                        self.display,
+                        (242, 239, 55),
+                        self.__world_space_to_camera(x, y),
+                        7*self.camera_scale
+                    )
 
             self.display.blit(self.object_layer_surface, (0, 0))
 

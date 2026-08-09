@@ -1,0 +1,3 @@
+
+class ConnectionDroppedError(Exception):
+    ...

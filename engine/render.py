@@ -3,7 +3,7 @@ import math
 import pyopencl as pycl
 import pygame
 
-from .item import Item
+
 from .network import Client
 from .assets import Texture2D
 from .map import LoadedMap
@@ -44,18 +44,20 @@ class Render:
 
         self.cl = OpenClContext()
         self.__assets = []
+        self.__lights = []
         self.__program = None
         self.__height_map_shape = None
         self.__height_map = None
         self.__light_map_shape = None
         self.__light_map = None
+        self.__light_map_ids = None
         self.__player_texture_id = None
         self.__map = None
         self.__deltas = None
         self.position = [0, 0]
         self.rotation = pygame.math.Vector2(1, 0)
         self.deg_rotation = 0.0
-        self.view_height = 0.75
+        self.view_height = 0.9
         self.gui_scale = 1
 
         Log.log("Created OpenCL context")
@@ -145,11 +147,13 @@ class Render:
         return len(self.__assets) - 1
 
     def load_map(self, path):
-        self.__assets = [] # I think I need to clear more than just assets
+        self.__assets = []
+        self.__lights = []
 
         if not self.dont_display:
             self.__map = LoadedMap(self, path)
             self.pre_compute_maps()
+            self.update_lighting()
 
             self.__player_texture_id = self.load_texture("data/textures/player_place_holder.png", mode="RGBA")
 
@@ -157,6 +161,10 @@ class Render:
         with open("data/kernel/shadow_mask.cl", "r") as f:
             self.__program = pycl.Program(self.cl.context, f.read()).build()
             self.__shadow_func = self.__program.mask
+
+        with open("data/kernel/light_mask.cl", "r") as f:
+            program = pycl.Program(self.cl.context, f.read()).build()
+            self.__lighting_func = program.update
 
         Log.log("Loaded kernels")
 
@@ -178,11 +186,47 @@ class Render:
         self.__height_map_shape = height_map.shape
         Log.log("Computed height map")
 
-        light_map = self.__map.compute_light_map()
+        light_map = self.__map.compute_light_map()  # Not really used any more
         self.__light_map = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=light_map.data)
         self.__light_map_shape = light_map.shape
         Log.log("Computed light map")
 
+        self.__lights = [
+            [
+                [light["position"][0], light["position"][1], light["radius"]],
+                True
+            ]
+            for light in self.__map.get_lights()
+        ]
+
+    def toggle_light(self, light_index, update=True):
+        self.__lights[light_index][1] = not self.__lights[light_index][1]
+
+        if update:
+            self.update_lighting()
+
+    def update_lighting(self):
+        light_data = np.array([
+            [x
+            for x, is_on in self.__lights
+            if is_on]
+        ], dtype=np.int32)
+
+        if len(light_data[0]) == 0:
+            light_data = np.array([
+                [[0, 0, 0]]
+            ], dtype=np.int32)
+
+        lights = pycl.Buffer(self.cl.context, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=light_data)
+
+        self.__lighting_func(
+            self.cl.queue, (self.__light_map_shape[0], self.__light_map_shape[1]), None,
+            self.__light_map,
+            lights,
+
+            np.int32(self.__light_map_shape[1]),
+            np.int32(len(light_data[0]))
+        )
 
     def compute_shadow_mask(self):
         pycl.enqueue_fill_buffer(self.cl.queue, self.shadow_mask_buffer, np.uint8(255), 0, self.shadow_mask.nbytes)
@@ -203,10 +247,10 @@ class Render:
 
             np.int32(max_step_count),
 
-            np.int32(self.position[0]),
-            np.int32(self.position[1]),
+            np.int32(self.position[0] - self.display_size[1]//2),
+            np.int32(self.position[1] - self.display_size[0]//2),
 
-            np.float32(self.view_height),
+            np.float32(self.view_height)
         )
 
         pycl.enqueue_copy(self.cl.queue, self.shadow_mask, self.shadow_mask_buffer)
@@ -256,7 +300,7 @@ class Render:
         dx = (self.display_size[0] // 2) - mx
         dy = (self.display_size[1] // 2) - my
 
-        rotation = math.atan2(dy, dx) - 1.570796
+        rotation = math.atan2(dy, dx) - 1.570796 # 90 deg in rads
         self.player_model.set_rotation(rotation)  # Takes in radians
 
         self.deg_rotation = math.degrees(rotation)
@@ -272,6 +316,8 @@ class Render:
         if self.dont_display:
             return None
 
+        self.display.fill((30, 30, 30))
+
         self.player_model.step(deltaTime)
 
         if not self.server_ready():
@@ -281,7 +327,7 @@ class Render:
         self.update_network()
         self.compute_shadow_mask()
 
-        self.display.blit(self.__map.background_img, (-self.position[1], -self.position[0]))
+        self.display.blit(self.__map.background_img, (-self.position[1] + self.display_size[0]//2, -self.position[0] + self.display_size[1]//2))
 
         for world_object in self.__map.scene.values():
             if "NORENDER" in world_object["path"]:
@@ -289,7 +335,7 @@ class Render:
 
             texture = self.get_asset(world_object["texture_id"])
             x, y = world_object["position"]
-            self.display.blit(texture.pygame_surface, (x - self.position[1], y - self.position[0]))
+            self.display.blit(texture.pygame_surface, (x - self.position[1] + self.display_size[0]//2, y - self.position[0] + self.display_size[1]//2))
 
         self.render_self()
 
@@ -297,7 +343,7 @@ class Render:
             if name != self.client.player.username:
                 self.render_player(player)
 
-        if not self.DEBUG:
+        if self.DEBUG is False:
             self.display.blit(self.shadow_mask_surface, (0, 0))
 
         self.render_hud(deltaTime)

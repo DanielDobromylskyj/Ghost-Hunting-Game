@@ -363,27 +363,27 @@ class MapMaker:
 
         self.display_save_progress("Saving - Writing Objects...")
         with open(path, "wb") as f:
-            f.write(self.SAVE_VERSION.to_bytes(1))
+            f.write(self.SAVE_VERSION.to_bytes(1, byteorder="big"))
 
             if self.background_texture is None:
-                f.write((0).to_bytes(2))
+                f.write((0).to_bytes(2, byteorder="big"))
             else:
-                f.write(len(self.background_texture[0]).to_bytes(2))
+                f.write(len(self.background_texture[0]).to_bytes(2, byteorder="big"))
                 f.write(self.background_texture[0].encode())
 
-            f.write(len(self.scene.keys()).to_bytes(4))
+            f.write(len(self.scene.keys()).to_bytes(4, byteorder="big"))
             for name, obj in self.scene.items():
-                f.write(len(name).to_bytes(2))
+                f.write(len(name).to_bytes(2, byteorder="big"))
                 f.write(name.encode())
 
-                f.write(obj["position"][0].to_bytes(2))
-                f.write(obj["position"][1].to_bytes(2))
+                f.write(obj["position"][0].to_bytes(2, byteorder="big"))
+                f.write(obj["position"][1].to_bytes(2, byteorder="big"))
 
-                f.write(round(obj["height"] * 1000).to_bytes(2))
+                f.write(round(obj["height"] * 1000).to_bytes(2, byteorder="big"))
 
                 texture_path = self.all_textures[obj["id"]][0]
 
-                f.write(len(texture_path).to_bytes(2))
+                f.write(len(texture_path).to_bytes(2, byteorder="big"))
                 f.write(texture_path.encode())
 
             self.display_save_progress("Saving - Converting Maps To Bytes...")
@@ -395,14 +395,14 @@ class MapMaker:
 
             self.display_save_progress("Saving - Writing Maps...")
 
-            f.write(height_map_width.to_bytes(2))
-            f.write(height_map_height.to_bytes(2))
-            f.write(len(height_data).to_bytes(4))
+            f.write(height_map_width.to_bytes(2, byteorder="big"))
+            f.write(height_map_height.to_bytes(2, byteorder="big"))
+            f.write(len(height_data).to_bytes(4, byteorder="big"))
             f.write(height_data)
 
-            f.write(light_map_width.to_bytes(2))
-            f.write(light_map_height.to_bytes(2))
-            f.write(len(light_data).to_bytes(4))
+            f.write(light_map_width.to_bytes(2, byteorder="big"))
+            f.write(light_map_height.to_bytes(2, byteorder="big"))
+            f.write(len(light_data).to_bytes(4, byteorder="big"))
             f.write(light_data)
 
 

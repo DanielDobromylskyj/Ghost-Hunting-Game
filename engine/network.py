@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import socket
@@ -6,9 +7,15 @@ import io
 import time
 import tempfile
 from typing import Any
+import pygame
+
+from packet_manager import *
+from packet_manager.udp_handshake import PeerServer as Server_UDP_Handshake
+from packet_manager.udp_handshake import Client as Client_UDP_Handshake
 
 from .file_api import encode_dict, decode_dict
 from .logger import Log
+from .audio_engine import ProxyChat
 
 
 def send_value(conn, value, compressed=False):
@@ -36,15 +43,35 @@ def recv_value(conn, compressed=False):
 
     return decoded["data"]
 
+def read_value(data: bytes, compressed=False):
+    buffer = io.BytesIO(data)
+    decoded = decode_dict(buffer, is_compressed=compressed)
+    buffer.close()
+
+    if "data" not in decoded:
+        print("Uh Oh:", decoded, data)
+        return None
+
+    return decoded["data"]
+
+def write_value(value, compressed=False):
+    buffer = io.BytesIO()
+    encode_dict({"data": value}, buffer, should_compress=compressed)
+    data = buffer.getvalue()
+    buffer.close()
+    return data
+
 
 class Player:
     username: str = "Unknown"
     last_update: float = 0.0
     position: tuple = (0, 0),
-    rotation: float = 0,
+    rotation: float = 0
     is_ghost: bool = False
     is_client: bool = False
     ready: bool = False
+    voice_audio: list
+    using_radio: bool = False
 
     def get_info(self):
         return {"username": self.username, "position": self.position, "is_ghost": self.is_ghost,
@@ -58,29 +85,59 @@ class Player:
         self.ready = info["ready"]
         self.last_update = time.time()
 
+    def voice_callback(self, input_data):
+        self.voice_audio.append(input_data)
+
 
 class Server:
     MAX_PLAYERS = 5
-    SERVER_FPS = 30
+    SERVER_FPS = 60
 
-    def __init__(self, map_path, port=5678):
-        local_ip = socket.gethostbyname(socket.gethostname())
+    def __init__(self, map_path, public_ip, port=5678, debug_on_lan=False):
+        self.local_ip = socket.gethostbyname(socket.gethostname())
+        self.public_ip = public_ip
+        self.port = port
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind((local_ip, port))
+        self.__debug_on_lan = debug_on_lan
+
+        Log.log(f"Starting Server. Public: {self.public_ip}, Local: {self.local_ip}, Port: {self.port}")
+
+        self.sock = createTCPsocket()
+        self.sock.bind((self.local_ip, port))
+
+        self.udp_connection = createUDPsocket()
+        self.udp_connection.bind((self.local_ip, port+1))
 
         self.map_path = map_path
         self.map_data = b""
 
-        self.players = []
+        self.max_voice_distance = 500
+
+        self.players: list[Player] = []
+        self.connections = []
+        self.__addr_lookup: dict[str, int] = {}
+
         self.mode = "starting"
 
     def __startup(self):
         """ Starts up the server, run in a thread (from the 'run' method)"""
+        Log.log(f"Loading Map Data...")
         with open(self.map_path, "rb") as f:
             self.map_data = f.read()
 
         self.mode = "lobby"
+
+        Log.log(f"Entering Update Loop")
+
+        tick = 0
+        clock = pygame.time.Clock()
+
+        while True:
+            self.__update_networks()
+            self.__update_player_positions()
+
+            clock.tick(self.SERVER_FPS)
+
 
     def __get_players_information(self):
         return [
@@ -88,7 +145,92 @@ class Server:
             for player in self.players
         ]
 
-    def __handle_client(self, conn: socket.socket):
+    @staticmethod
+    def unknown_packet_callback(conn_manager, packet_type, data, protocol):
+        print(f"WARNING: SERVER Unknown {protocol} Packet Type -> {packet_type}: {data}")
+
+    def on_disconnect(self, conn_manager: ConnectionTCP, data: bytes):
+        try:
+            self.players.remove(self.__get_player_from_conn(conn_manager))
+        except ValueError:
+            pass
+
+        conn_manager.sock.close()
+
+    @staticmethod
+    def on_ping(conn_manager: ConnectionTCP, data: bytes):
+        conn_manager.send("pong", b"")
+
+    def on_map_request(self, conn_manager: ConnectionTCP, data: bytes):
+        conn_manager.send("map_data", self.map_data)
+
+    def on_tps(self, conn_manager: ConnectionTCP, data: bytes):
+        conn_manager.send("tps", self.SERVER_FPS.to_bytes(8, byteorder="big"))
+
+    def on_player_toggle_radio(self, conn_manager: ConnectionTCP, data: bytes):
+        player: Player = self.__get_player_from_conn(conn_manager)
+
+        player.using_radio = data == b"1"
+
+    def on_player_info(self, conn_manager: ConnectionUDP, sender, data: bytes):
+        player = self.__get_player_from_addr(sender)
+        player.recv_info(read_value(data))
+
+    def on_other_players_info(self, conn_manager: ConnectionUDP, sender, data: bytes):
+        conn_manager.send("player_data", write_value(self.__get_players_information()))
+
+    def on_recv_voice_data(self, conn_manager: ConnectionUDP, sender, data: bytes):
+        send_player: Player = self.__get_player_from_addr(sender)
+        send_pos = send_player.position if type(send_player.position[0]) in (int, float) else send_player.position[0]
+
+        for conn_tcp, conn_udp in self.connections:
+            if conn_udp == conn_manager: # Stop player hearing themselves
+                continue
+
+            # Calculate Relative Position / Volume
+            recv_player: Player = self.__get_player_from_conn(conn_tcp)
+            recv_pos = recv_player.position if type(recv_player.position[0]) in (int, float) else recv_player.position[0]
+
+            dx = recv_pos[0] - send_pos[0]
+            dy = recv_pos[1] - send_pos[1]
+
+            dist = math.sqrt(dx*dx + dy*dy)
+            volume = max(0, (self.max_voice_distance - dist) / self.max_voice_distance)
+
+            if send_player.using_radio:
+                volume = 1
+
+            conn_udp.send("ProxyVoiceToClient", write_value({
+                "bytes": data, "from": sender,
+                "vol": volume, "radio": send_player.using_radio,
+                "rel_x": dx, "rel_y": dy
+            }))
+
+    def __get_player_from_conn(self, conn: ConnectionUDP | ConnectionTCP) -> Player:
+        if hasattr(conn, "_player_index"):
+            player = self.players[getattr(conn, "_player_index")]
+
+            if isinstance(player, Player):
+                return player
+
+            else:
+                raise TypeError("Unknown Player Class!")
+
+        else:
+            raise AttributeError("Player Doesn't Have Connection Set!")
+
+    def __get_player_from_addr(self, addr: tuple[str, int]):
+        ip, port = addr
+
+        if ip in self.__addr_lookup:
+            player_id = self.__addr_lookup[ip]
+            return self.players[player_id]
+
+        else:
+            raise LookupError
+
+
+    def __handle_client(self, conn: socket.socket, addr: tuple[str, int]):
         """ Handles client connections """
         if self.mode == "starting":
             send_value(conn, "server_still_starting")
@@ -100,55 +242,73 @@ class Server:
             time.sleep(1)
             return conn.close()
 
-        conn_peer_name = conn.getpeername()
+        # Setup TCP
+        callbacks_tcp = {
+            b"disconnect": self.on_disconnect,
+            b"ping": self.on_ping,
+            b"map_data": self.on_map_request,
+            b"tps": self.on_tps,
 
-        send_value(conn, "connected")
-        player_info = recv_value(conn)
+            b"set_radio": self.on_player_toggle_radio
+        }
 
+
+        packet_manager_tcp = ConnectionTCP(conn, callbacks_tcp, self.unknown_packet_callback)
+        Log.log("Established TCP")
+
+        # Setup UDP
+        udp_con = Server_UDP_Handshake.request_udp_connection(packet_manager_tcp, self.udp_connection)
+
+        if not isinstance(udp_con, ConnectionUDP):
+            raise TypeError
+
+        udp_con.add_packet_callback("ProxyVoiceToServer", self.on_recv_voice_data)
+        udp_con.add_packet_callback("player_info", self.on_player_info)
+
+        udp_con.set_generic_callback(self.unknown_packet_callback)
+
+
+        # Init Player
         player = Player()
-        player.recv_info(player_info)
-
         self.players.append(player)
         player_index = len(self.players) - 1
 
-        while conn:
-            request = recv_value(conn)
+        setattr(packet_manager_tcp, "_player_index", player_index)
+        setattr(udp_con, "_player_index", player_index)
 
-            if request == "disconnect":
-                self.players.remove(conn)
-                conn.close()
-                break
+        self.__addr_lookup[packet_manager_tcp.sock.getpeername()[0]] = player_index
 
-            elif request == "ping":
-                send_value(conn, "pong")
-
-            elif request == "map_data":
-                send_value(conn, self.map_data, compressed=True)
-
-            elif request == "tps":
-                send_value(conn, self.SERVER_FPS)
-
-            elif request == "player_info":
-                send_value(conn, "ready")
-                player_info = recv_value(conn)
-                self.players[player_index].recv_info(player_info)
-
-            elif request == "other_players_info": # At some stage make this only send close players / visible maybe
-               send_value(conn, self.__get_players_information())
+        # Add connection tracking info
+        self.connections.append([packet_manager_tcp, udp_con])
 
         return None
+
+    def __update_networks(self):
+        for tcp, udp in self.connections:
+            tcp.update()
+
+            if udp:
+                udp.update()
+
+    def __update_player_positions(self):
+        player_info = self.__get_players_information()
+
+        for tcp, udp in self.connections:
+            udp.send("GlobalPlayerData", write_value(player_info))
+
 
     def run(self):
         """ Starts up the server, then runs a loop to allow connections"""
         threading.Thread(target=self.__startup, daemon=True).start()
 
+        Log.log(f"Listening For Connections")
         self.sock.listen(5)
 
         while True:
             conn, addr = self.sock.accept()
 
             if len(self.players) < Server.MAX_PLAYERS:
-                threading.Thread(target=self.__handle_client, args=(conn,), daemon=True).start()
+                threading.Thread(target=self.__handle_client, args=(conn, addr), daemon=True).start()
 
             else:
                 send_value(self.sock, "lobby_is_full")
@@ -164,81 +324,113 @@ class Client:
         self.player = player
         self.players = {}
         self.current_ping = 0
+        self.ping_start = -1
         self.error = None
+        self.map_loaded = False
+
+        self.target_tps = 60
+        self.target_time = 1 / self.target_tps
+
+        self.__tcp_callbacks = {
+            b"pong": self.on_pong,
+            b"map_data": self.on_recv_map_data,
+            b"tps": self.on_recv_server_tps
+        }
+
+        self.tcp = None
+        self.udp = None
+
+        self.proxy_chat = ProxyChat(self.udp, read_value)
+
+    @staticmethod
+    def unknown_packet_callback(conn_manager, packet_type, data, protocol: str):
+        Log.log(f"WARNING: CLIENT Unknown {protocol} Packet Type -> {packet_type}: {data[:500]}")
 
     def hook_render_engine(self):
         Log.log("Client hooked render engine")
         self.engine.client = self
 
+    def __udp_callback(self, conn_manager):
+        Log.log("Connected via UDP and TCP")
+        self.udp: ConnectionUDP = Client_UDP_Handshake.get_udp_from_tcp(conn_manager)
+
+        if not isinstance(self.udp, ConnectionUDP):
+            raise ConnectionError("Failed to establish UDP")
+
+        self.udp.add_packet_callback("GlobalPlayerData", self.on_player_info_update)
+
+        self.proxy_chat.udp_conn = self.udp
+        self.proxy_chat.on_udp_init()
+
+        self.proxy_chat.start()
+
     def connect(self) -> bool | None | Any:
         """ Attempts to connect to the server, returns true / error message, if successful / failed"""
         self.sock.connect(self.address)
-        response = recv_value(self.sock)
 
-        if response != "connected":
-            Log.log(f"Client connection failed: {response}")
-            return response
+        self.tcp = ConnectionTCP(self.sock, self.__tcp_callbacks, self.unknown_packet_callback)
+        Client_UDP_Handshake.enable_udp_creation(self.tcp, self.__udp_callback)
 
-        send_value(self.sock, self.player.get_info())
         Log.log(f"Server accepted client")
+
+        self.get_map_data()
+        self.get_server_tps()
 
         return True
 
     def disconnect(self) -> None:
         """ Safely disconnects from server """
         Log.log(f"Disconnecting...")
-        send_value(self.sock, "disconnect")
+        self.tcp.send("disconnect", b"")
         self.sock.close()
 
+        if self.udp:
+            self.udp.sock.close()
+
     def ping(self) -> int | None:
-        """ Returns time in ms or none if a invalid value is received"""
-        start = time.time()
-        send_value(self.sock, "ping")
-        pong = recv_value(self.sock)
-        end = time.time()
+        """ Returns time in ms or none if an invalid value is received"""
+        self.ping_start = time.time()
+        self.tcp.send("ping", b"")
 
-        if pong == "pong":
-            return round((end - start) / 1000)
-        return None
+    def on_pong(self, tcp_conn, data: bytes):
+        self.current_ping = round((time.time() - self.ping_start) / 1000)
 
-    def get_map_data(self) -> bytes:
+    def get_map_data(self):
         """ Gets the raw file data of the servers loaded map"""
-        send_value(self.sock, "map_data")
-        map_data = recv_value(self.sock, compressed=True)
-        assert isinstance(map_data, bytes)
-        return map_data
+        self.tcp.send("map_data", b"")
 
-    def get_server_tps(self) -> int:
+    def on_recv_map_data(self, tcp_conn, data: bytes):
+        self.load_map(data)
+
+    def get_server_tps(self):
         """ Gets the servers desired TPS"""
-        send_value(self.sock, "tps")
-        v = recv_value(self.sock)
-        assert isinstance(v, int)
-        return v
+        self.tcp.send("tps", b"")
 
-    def send_player_info(self):
+    def on_recv_server_tps(self, tcp_conn, data: bytes):
+        self.target_tps = int.from_bytes(data, byteorder="big")
+        self.target_time = 1 / self.target_tps
+
+    def set_radio(self, is_on: bool):
+        self.tcp.send("set_radio", b"1" if is_on else b"0")
+
+    def update_player_info(self):
         """ Update the servers version of out data"""
-        send_value(self.sock, "player_info")
-        if recv_value(self.sock) != "ready": return
-        send_value(self.sock, self.player.get_info())
+        if self.udp is not None:
+            self.udp.send("player_info", write_value(self.player.get_info()))
 
-    def get_other_players_info(self):
+    def on_player_info_update(self, udp_conn, sender: tuple[str, int], data: bytes):
         """ Retrieves and updates all player data (including our own) """
-        send_value(self.sock, "other_players_info")
-        data = recv_value(self.sock)
 
-        for player_info in data:
+        for player_info in read_value(data):  # NOQA - It should always be a list
             if player_info["username"] not in self.players:
                 self.players[player_info["username"]] = Player()
 
             self.players[player_info["username"]].recv_info(player_info)
 
-    def get_ping(self):
-        """ Sets the current ping"""
-        self.current_ping = self.ping()
 
-    def load_map(self):
+    def load_map(self, map_data):
         """ Loads the map data from the servers loaded map and loads it into render engine """
-        map_data = self.get_map_data()
+        Log.log(f"Received Map Data ({round(len(map_data) / 1024)}Kb)")
         path = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=5)) + "_temp_map.bin"
 
         try:
@@ -246,6 +438,7 @@ class Client:
                 f.write(map_data)
 
             self.engine.load_map(path)
+            self.map_loaded = True
         except:
             os.remove(path)
             raise
@@ -256,48 +449,30 @@ class Client:
         """ Sets player status to "ready" allowing server to start playing """
         self.player.ready = ready_status
 
+    def update_ping(self):
+        if self.tcp is not None:
+            self.ping()
 
-    def __start(self) -> None:
-        try:
-            result = self.connect()
+    def update_network(self):
+        self.update_player_info()
 
-            if result is not True:
-                raise ConnectionRefusedError(result)
-        except Exception as e:
-            self.error = str(e)
-            raise
+        if self.tcp is not None:
+            self.tcp.update()
 
-        self.load_map()
-        target_tps = self.get_server_tps()
-        target_time = 1 / target_tps
-        tick_counter = 0
-
-        while True:
-            start = time.perf_counter()
-
-            # Networking Update Loop
-
-            self.send_player_info()
-            self.get_other_players_info()
-
-            if tick_counter % target_tps == 0:
-                self.get_ping()
-
-
-            # End Of Networking Loop
-
-            elapsed = time.perf_counter() - start
-            if elapsed < target_time:
-                time.sleep(target_time - elapsed)
-
-            else:
-                if tick_counter % target_tps == 0:
-                    print(f"[WARNING] Low Network TPS ({round(1 / elapsed, 1)}/{target_tps}), is the client / server overloaded?")
-
-            tick_counter += 1
+        if self.udp is not None:
+            self.udp.update()
 
 
     def start(self) -> None:
         """ Handles all connections and data transfer, in the background"""
         self.hook_render_engine()
-        threading.Thread(target=self.__start, daemon=True).start()
+
+        try:
+            result = self.connect()
+
+            if result is not True:
+                raise ConnectionRefusedError(result)
+
+        except Exception as e:
+            self.error = str(e)
+            raise

@@ -1,5 +1,16 @@
 
-__kernel void mask(__global uchar* pixels, __global float* height_map, __global float* light_map, __global float* deltas, int screen_width, int screen_height, int map_width, int map_height, int max_step_count, int x_offset, int y_offset, float view_height) {
+__kernel void mask(
+        __global uchar* pixels,
+        __global float* height_map,
+        __global float* light_map,
+        __global float* deltas,
+
+        int screen_width, int screen_height,
+        int map_width, int map_height,
+        int max_step_count,
+        int x_offset, int y_offset,
+        float view_height
+) {
     int delta_index = get_global_id(0);
 
     float delta_x = deltas[delta_index * 2];
@@ -10,9 +21,14 @@ __kernel void mask(__global uchar* pixels, __global float* height_map, __global 
 
     float ray_brightness = 1;
 
-    int view_distance_left = 10; // Distance we can see past a wall (Assuming height doesn't change)
+    int view_distance_left = 2; // Distance we can see past a wall (Assuming height doesn't change)
     int wall_hit = 0;
     int vision_obstructed = 0;
+
+    int object_hit = 0;
+    float object_hit_height = 0;
+
+    int no_more_step_over = 0;
 
     for (int step = 0; step < max_step_count; step++) {
         if (step > 50) {
@@ -36,14 +52,24 @@ __kernel void mask(__global uchar* pixels, __global float* height_map, __global 
         float map_height = height_map[map_index];
         float light_intensity = light_map[map_index];
 
-        if (map_height >= view_height) { wall_hit = 1; }
+        if (map_height >= view_height) {
+            wall_hit = 1;
+        }
 
         if ((map_height > 0) && (map_height < view_height)) {
             vision_obstructed = 1;
+            object_hit_height = map_height;
+            object_hit = 1;
         } else {
             if (vision_obstructed == 1) {
                 vision_obstructed = 0;
                 ray_brightness = ray_brightness * 0.6;
+            }
+        }
+
+        if (map_height < object_hit_height) {
+            if (ray_brightness > (1 - map_height)) {
+                ray_brightness = (1 - map_height);
             }
         }
 
@@ -61,7 +87,11 @@ __kernel void mask(__global uchar* pixels, __global float* height_map, __global 
 
         float pixel_brightness = ray_brightness * 0.1;
 
-        if (light_intensity > pixel_brightness) { pixel_brightness = light_intensity; }
+        if (((object_hit == 1) && (vision_obstructed == 0))) {
+            no_more_step_over = 1;
+        }
+
+        if ((light_intensity > pixel_brightness * 255) && (no_more_step_over == 0)) { pixel_brightness = light_intensity / 255; }
 
         pixels[pixel_index] = (uchar)((1 - pixel_brightness) * 255);
 
